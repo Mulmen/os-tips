@@ -4,15 +4,19 @@ import pandas as pd
 import streamlit as st
 
 # =========================
-# KONFIG (ingen secrets behövs)
+# KONFIG
 # =========================
 PLAYERS = ["Johan", "Göran", "Jesper", "Peter", "Magnus", "Tony"]
 MEDALS = ["None", "Bronze", "Silver", "Gold"]
 
-DATA_DIR = Path("data")
-ATHLETES_CSV = DATA_DIR / "athletes.csv"
-RESULTS_CSV = DATA_DIR / "results.csv"
-PICKS_JSON = DATA_DIR / "picks.json"
+# Repo-data (read-only i Streamlit Cloud)
+REPO_DATA_DIR = Path("data")
+ATHLETES_CSV = REPO_DATA_DIR / "athletes.csv"
+
+# Skrivbar data-katalog (funkar på Streamlit Cloud)
+STATE_DIR = Path.home() / ".streamlit" / "os_tips_state"
+RESULTS_CSV = STATE_DIR / "results.csv"
+PICKS_JSON = STATE_DIR / "picks.json"
 
 # Vill du slippa lösen helt, sätt ADMIN_PASSWORD = ""
 ADMIN_PASSWORD = "admin"
@@ -21,10 +25,10 @@ st.set_page_config(page_title="OS-tips", layout="wide")
 
 
 # =========================
-# FILHANTERING
+# FILHANTERING (skrivbart)
 # =========================
-def ensure_data_dir():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+def ensure_state_dir():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 def atomic_write_text(path: Path, text: str, encoding: str = "utf-8"):
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -33,7 +37,7 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8"):
 
 def load_athletes() -> pd.DataFrame:
     if not ATHLETES_CSV.exists():
-        st.error(f"Saknar {ATHLETES_CSV}. Lägg in filen i repot.")
+        st.error(f"Saknar {ATHLETES_CSV}. Lägg in filen i repot under data/athletes.csv")
         st.stop()
     df = pd.read_csv(ATHLETES_CSV)
     req = {"athlete_id", "name", "sport"}
@@ -47,11 +51,11 @@ def load_athletes() -> pd.DataFrame:
     return df
 
 def load_results(athletes: pd.DataFrame) -> pd.DataFrame:
-    # Om results saknas: skapa default (None)
+    # Om results saknas i STATE_DIR: skapa default (None)
     if not RESULTS_CSV.exists():
         out = athletes[["athlete_id"]].copy()
         out["medal"] = "None"
-        out.to_csv(RESULTS_CSV, index=False)
+        atomic_write_text(RESULTS_CSV, out.to_csv(index=False))
 
     df = pd.read_csv(RESULTS_CSV)
     req = {"athlete_id", "medal"}
@@ -83,7 +87,6 @@ def save_picks(picks: dict):
     atomic_write_text(PICKS_JSON, json.dumps(picks, ensure_ascii=False, indent=2))
 
 def score_pick(pick: str, actual: str) -> int:
-    # 5p exakt medalj, 2p rätt person tog medalj men fel valör
     if actual == "None":
         return 0
     if pick == actual:
@@ -117,22 +120,20 @@ def build_scoreboard(athletes: pd.DataFrame, results: pd.DataFrame, picks_all: d
 # =========================
 # APP
 # =========================
-ensure_data_dir()
+ensure_state_dir()
 athletes = load_athletes()
 results = load_results(athletes)
 picks_all = load_picks()
 
 st.title("OS-tips – välj sport och atlet (utan secrets)")
 
-st.warning(
-    "OBS: Den här versionen sparar till lokala filer (data/picks.json, data/results.csv). "
-    "På Streamlit Cloud kan filerna ibland nollställas vid omstart/redeploy. "
-    "Använd Backup/Restore-fliken för att spara en kopia."
+st.info(
+    f"Sparar tips & resultat i en skrivbar mapp: `{STATE_DIR}`.\n"
+    "OBS: På Streamlit Cloud kan detta fortfarande nollställas vid omstart/redeploy — använd Backup/Restore."
 )
 
 tabs = st.tabs(["Lägg tips", "Scoreboard", "Admin (resultat)", "Backup / Restore"])
 
-# ---- TAB 1: Lägg tips
 with tabs[0]:
     left, right = st.columns([1, 1], gap="large")
 
@@ -183,7 +184,6 @@ with tabs[0]:
             view = view[["sport", "name", "athlete_id", "pick"]].sort_values(["sport", "name"]).reset_index(drop=True)
             st.dataframe(view, use_container_width=True, hide_index=True)
 
-# ---- TAB 2: Scoreboard
 with tabs[1]:
     st.subheader("Scoreboard")
     score_df = build_scoreboard(athletes, results, picks_all)
@@ -196,7 +196,6 @@ with tabs[1]:
 
     st.caption("Poäng: 5p exakt medaljvalör, 2p om rätt person tog medalj men fel valör.")
 
-# ---- TAB 3: Admin results
 with tabs[2]:
     st.subheader("Admin – uppdatera faktiska resultat")
 
@@ -232,10 +231,9 @@ with tabs[2]:
         if st.button("Spara resultat"):
             out = pd.DataFrame(updated, columns=["athlete_id", "medal"])
             save_results(out)
-            st.success("Sparade data/results.csv (lokalt)!")
+            st.success("Sparade results.csv (i skrivbar state-mapp)!")
             st.info("Gå till Scoreboard-fliken och uppdatera sidan för att se nya poäng.")
 
-# ---- TAB 4: Backup / Restore
 with tabs[3]:
     st.subheader("Backup")
     st.download_button(
